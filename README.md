@@ -50,6 +50,9 @@ SCADA обращается к нему по IP и читает/пишет рег
 | DI3        | D4          |
 | W5500 (CS) | D10         |
 
+Схема: 
+![Снимок](https://github.com/UterGrooll/PLC_PRS10/blob/main/screenshot/shematic.png)
+
 Остальные пины SPI — стандартные.
 # 📘 Modbus регистры
 
@@ -207,6 +210,10 @@ void loop() {
 | Response Timeout    | 1000 ms           |
 | Delay Between Polls | 20–50 ms          |
 | Connect Timeout     | 8000 ms           |
+
+![Снимок](https://github.com/UterGrooll/PLC_PRS10/blob/main/screenshot/Modbus%20Poll.png)
+
+![Снимок](https://github.com/UterGrooll/PLC_PRS10/blob/main/screenshot/Rapid%20Scada.png)
 
 # 🚀 Рекомендации по эксплуатации
 * Использовать отдельный MAC-адрес для каждого устройства
