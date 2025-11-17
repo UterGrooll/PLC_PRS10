@@ -22,7 +22,7 @@ GyverDS18Single ds(DS_PIN);
 const uint16_t REG_TEMP = 120;
 
 /* ---------- Inputs ---------- */
-const uint8_t IN_PINS[] = { 2, 3, 4 };
+const uint8_t IN_PINS[] = { 2, 3, 4, 5 };
 const uint16_t REG_IN_BASE = 130;
 const uint32_t DEBOUNCE_MS = 50;
 uint8_t inputState = 0xFF;  // 1=closed (LOW), 0=open (HIGH)
@@ -41,7 +41,7 @@ void setup() {
   digitalWrite(RELAY1_PIN, LOW);
   digitalWrite(RELAY2_PIN, LOW);
 
-  for (uint8_t i = 0; i < 3; ++i) {
+  for (uint8_t i = 0; i < 4; ++i) {
     pinMode(IN_PINS[i], INPUT_PULLUP);
     mb.addReg(HREG(REG_IN_BASE + i));
     mb.Hreg(REG_IN_BASE + i, 0);
@@ -96,7 +96,7 @@ void loop() {
 
   /* ===== Dry contacts with debounce ===== */
   uint8_t nowInputs = 0;
-  for (uint8_t i = 0; i < 3; ++i) {
+  for (uint8_t i = 0; i < 4; ++i) {
     if (digitalRead(IN_PINS[i]) == LOW) nowInputs |= (1 << i);
   }
 
@@ -105,7 +105,7 @@ void loop() {
     inputLast = nowInputs;
   } else if ((now - debounceTimer) >= DEBOUNCE_MS && nowInputs != inputState) {
     inputState = nowInputs;
-    for (uint8_t i = 0; i < 3; ++i) {
+    for (uint8_t i = 0; i < 4; ++i) {
       mb.Hreg(REG_IN_BASE + i, (inputState >> i) & 1);
     }
   }
