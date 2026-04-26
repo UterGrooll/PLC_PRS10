@@ -10,6 +10,9 @@
 * Передавать состояние трёх дискретных входов (с антидребезгом)
 * Быть полностью совместимым с любой SCADA (Rapid SCADA / Modbus Poll / etc.)
 
+Работает на моей библиотеке:
+https://github.com/UterGrooll/ModbusTCP_RU
+
 ## 🛠 Возможности
 
 ### 🔌 **Modbus TCP сервер**
@@ -201,7 +204,7 @@ void loop() {
 | Параметр            | Значение          |
 | ------------------- | ----------------- |
 | Mode                | Modbus TCP/IP     |
-| Server IP           | **192.168.0.179** |
+| Server IP           | **192.168.1.179** |
 | Port                | **502**           |
 | Response Timeout    | 1000 ms           |
 | Delay Between Polls | 20–50 ms          |
