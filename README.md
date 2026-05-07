@@ -1,222 +1,171 @@
-# 📡 Arduino Modbus TCP Контроллер
+# PLC_PRS10
 
-**Контроллер с Modbus TCP, датчиком температуры DS18B20, двумя реле и тремя дискретными входами**
+`PLC_PRS10` — Arduino Modbus TCP Slave контроллер для SCADA.
 
-![Снимок](https://github.com/UterGrooll/PLC_PRS10/blob/main/screenshot/20251112_151544.jpg)
-Данный проект — это готовый Modbus TCP-устройство на базе Arduino + W5500, позволяющее:
+Проект построен на Arduino + Ethernet W5100/W5500 и библиотеке [`ModbusTCP_RU`](https://github.com/UterGrooll/ModbusTCP_RU). Устройство предоставляет SCADA две релейные команды, температуру DS18B20 и четыре дискретных входа.
 
-* Управлять двумя реле (одно с таймером авто-отключения)
-* Считывать температуру с DS18B20
-* Передавать состояние трёх дискретных входов (с антидребезгом)
-* Быть полностью совместимым с любой SCADA (Rapid SCADA / Modbus Poll / etc.)
+![Фото устройства](https://github.com/UterGrooll/PLC_PRS10/blob/main/screenshot/20251112_151544.jpg)
 
-Работает на моей библиотеке:
-https://github.com/UterGrooll/ModbusTCP_RU
+## Назначение
 
-## 🛠 Возможности
+Контроллер предназначен для небольших задач автоматизации:
 
-### 🔌 **Modbus TCP сервер**
-Устройство работает как Modbus Slave (Server). Он инициализирует сервер с помощью mb.server() и обрабатывает запросы мастера (например, Rapid SCADA) через mb.task(). 
+- управление двумя реле из SCADA;
+- автоматическое отключение первого реле через 60 секунд;
+- чтение температуры с датчика DS18B20;
+- чтение четырёх дискретных входов;
+- работа по Modbus TCP через порт `502`;
+- восстановление Ethernet-сервера после выдёргивания и возврата патч-корда.
 
-### 🔥 **Реле**
-* **Relay 1** — включается через Modbus, автоматически выключается через **60 секунд** - используется для перезапуска оборудования.
-* **Relay 2** — обычное управление (ON/OFF).
+## Аппаратная часть
 
-### 🌡 **Температура**
-* Поддерживается любой датчик DS18B20
-* Период обновления ~1 сек
-* Значение передаётся в десятой доле градуса (например 253 → 25.3°C)
+| Узел | Пин Arduino |
+| --- | --- |
+| Relay 1 | D7 |
+| Relay 2 | D6 |
+| DI1 | D2 |
+| DI2 | D3 |
+| DI3 | D4 |
+| DI4 | D5 |
+| DS18B20 | D9 |
+| W5100/W5500 CS | D10 |
 
-### ⚡ **Дискретные входы**
-3 входа на пинах **D2, D3, D4**
-* подключены как `INPUT_PULLUP`
-* передают состояние:
-  * 1 — контакты замкнуты (LOW)
-  * 0 — разомкнуты (HIGH)
+Остальные пины SPI используются стандартно для Ethernet-модуля.
 
-Входы оснащены **50 мс антидребезгом**.
-### 💾 **Отказоустойчивость**
-* Полностью без `delay()`
-* Основные процессы работают через `millis()`
-* Modbus обслуживается в режиме реального времени
+Схема:
 
-# 🔧 Схема подключения
-| Элемент    | Пин Arduino |
-| ---------- | ----------- |
-| DS18B20    | D9          |
-| Relay 1    | D7          |
-| Relay 2    | D6          |
-| DI1        | D2          |
-| DI2        | D3          |
-| DI3        | D4          |
-| W5500 (CS) | D10         |
+![Схема](https://github.com/UterGrooll/PLC_PRS10/blob/main/screenshot/shematic.png)
 
-Схема: 
-![Снимок](https://github.com/UterGrooll/PLC_PRS10/blob/main/screenshot/shematic.png)
+## Сеть
 
-Остальные пины SPI — стандартные.
-# 📘 Modbus регистры
-
-## **Holding Registers (Read/Write)**
-| Адрес   | Назначение                | Формат |
-| ------- | ------------------------- | ------ |
-| **110** | Relay 1 (1 – ON, 0 – OFF) | R/W    |
-| **111** | Relay 2 (1 – ON, 0 – OFF) | R/W    |
-| **120** | Температура ×10           | R      |
-| **130** | DI1                       | R      |
-| **131** | DI2                       | R      |
-| **132** | DI3                       | R      |
-
-# 💻 Полный рабочий скетч
+По умолчанию в скетче задано:
 
 ```cpp
-#include <SPI.h>
-#include <Ethernet.h>
-#include <ModbusEthernet.h>
-#include <GyverDS18.h>
-
-/* ---------- Network & Modbus ---------- */
 byte mac[] = { 0xDE, 0xDD, 0xBE, 0xEF, 0xFE, 0x01 };
-IPAddress ip(192, 168, 0, 179);
-ModbusEthernet mb;
-
-/* ---------- Relays ---------- */
-const uint8_t RELAY1_PIN = 7;
-const uint8_t RELAY2_PIN = 6;
-const uint16_t REG_RELAY1 = 110;
-const uint16_t REG_RELAY2 = 111;
-const uint32_t RELAY1_TIMEOUT = 60000UL;  // 1 min
-uint32_t relay1OnTime = 0;
-
-/* ---------- Temperature ---------- */
-const uint8_t DS_PIN = 9;
-GyverDS18Single ds(DS_PIN);
-const uint16_t REG_TEMP = 120;
-
-/* ---------- Inputs ---------- */
-const uint8_t IN_PINS[] = { 2, 3, 4 };
-const uint16_t REG_IN_BASE = 130;
-const uint32_t DEBOUNCE_MS = 50;
-uint8_t inputState = 0xFF;  // 1=closed (LOW), 0=open (HIGH)
-uint8_t inputLast  = 0xFF;
-uint32_t debounceTimer = 0;
-
-/* ---------- Serial debug ---------- */
-uint32_t serialTimer = 0;
-const uint32_t SERIAL_PERIOD = 500;
-
-/* ---------- Setup ---------- */
-void setup() {
-  Serial.begin(115200);
-  pinMode(RELAY1_PIN, OUTPUT);
-  pinMode(RELAY2_PIN, OUTPUT);
-  digitalWrite(RELAY1_PIN, LOW);
-  digitalWrite(RELAY2_PIN, LOW);
-
-  for (uint8_t i = 0; i < 3; ++i) {
-    pinMode(IN_PINS[i], INPUT_PULLUP);
-    mb.addReg(HREG(REG_IN_BASE + i));
-    mb.Hreg(REG_IN_BASE + i, 0);
-  }
-
-  Ethernet.init(10);
-  Ethernet.begin(mac, ip);
-  mb.server();
-
-  mb.addReg(HREG(REG_RELAY1));
-  mb.Hreg(REG_RELAY1, 0);
-  mb.addReg(HREG(REG_RELAY2));
-  mb.Hreg(REG_RELAY2, 0);
-  mb.addReg(HREG(REG_TEMP));
-  mb.Hreg(REG_TEMP, 0);
-
-  ds.requestTemp();
-
-  Serial.println(F("System Ready!"));
-}
-
-/* ---------- Main loop ---------- */
-void loop() {
-  mb.task();  // handle Modbus requests
-  uint32_t now = millis();
-
-  /* ===== Relay 1 with timer ===== */
-  if (mb.Hreg(REG_RELAY1)) {
-    digitalWrite(RELAY1_PIN, HIGH);
-    if (!relay1OnTime) relay1OnTime = now;
-    if ((now - relay1OnTime) >= RELAY1_TIMEOUT) {
-      mb.Hreg(REG_RELAY1, 0);
-      relay1OnTime = 0;
-      digitalWrite(RELAY1_PIN, LOW);
-    }
-  } else {
-    relay1OnTime = 0;
-    digitalWrite(RELAY1_PIN, LOW);
-  }
-
-  /* ===== Relay 2 ===== */
-  digitalWrite(RELAY2_PIN, mb.Hreg(REG_RELAY2) ? HIGH : LOW);
-
-  /* ===== Temperature ===== */
-  if (ds.ready()) {
-    if (ds.readTemp()) {
-      float t = ds.getTemp();
-      mb.Hreg(REG_TEMP, (int)(t * 10));  // 1/10 °C precision
-    }
-    ds.requestTemp();  // schedule next reading
-  }
-
-  /* ===== Dry contacts with debounce ===== */
-  uint8_t nowInputs = 0;
-  for (uint8_t i = 0; i < 3; ++i) {
-    if (digitalRead(IN_PINS[i]) == LOW) nowInputs |= (1 << i);
-  }
-
-  if (nowInputs != inputLast) {
-    debounceTimer = now;
-    inputLast = nowInputs;
-  } else if ((now - debounceTimer) >= DEBOUNCE_MS && nowInputs != inputState) {
-    inputState = nowInputs;
-    for (uint8_t i = 0; i < 3; ++i) {
-      mb.Hreg(REG_IN_BASE + i, (inputState >> i) & 1);
-    }
-  }
-
-  /* ===== Serial debug (non‑blocking) ===== */
-  if ((now - serialTimer) >= SERIAL_PERIOD) {
-    serialTimer = now;
-    Serial.print(F("Temp="));
-    Serial.print(mb.Hreg(REG_TEMP) / 10.0);
-    Serial.print(F("C R1="));
-    Serial.print(mb.Hreg(REG_RELAY1));
-    Serial.print(F(" R2="));
-    Serial.print(mb.Hreg(REG_RELAY2));
-    Serial.print(F(" IN="));
-    Serial.println(inputState, BIN);
-  }
-}
-
+IPAddress ip(192, 168, 1, 179);
+IPAddress gateway(192, 168, 1, 1);
+IPAddress subnet(255, 255, 255, 0);
 ```
 
+SCADA подключается к:
+
+| Параметр | Значение |
+| --- | --- |
+| Mode | Modbus TCP/IP |
+| Server IP | `192.168.1.179` |
+| Port | `502` |
+| Slave ID | `1` |
+| Timeout | `1000 ms` |
+| Scan Rate | `1000 ms` |
+
+## Карта Modbus
+
+В проекте используется раздельная Modbus-модель из `ModbusTCP_RU`.
+
+### Coils
+
+Чтение: `FC01`
+Запись: `FC05` или `FC15`
+
+| Address | Назначение | Формат |
+| --- | --- | --- |
+| `0` | Relay 1 | `0 = OFF`, `1 = ON` |
+| `1` | Relay 2 | `0 = OFF`, `1 = ON` |
+
+Relay 1 автоматически отключается через `60` секунд после включения.
+
+### Discrete Inputs
+
+Чтение: `FC02`
+
+| Address | Назначение | Формат |
+| --- | --- | --- |
+| `0` | DI1, пин D2 | `1 = замкнут`, `0 = разомкнут` |
+| `1` | DI2, пин D3 | `1 = замкнут`, `0 = разомкнут` |
+| `2` | DI3, пин D4 | `1 = замкнут`, `0 = разомкнут` |
+| `3` | DI4, пин D5 | `1 = замкнут`, `0 = разомкнут` |
+
+Входы работают через `INPUT_PULLUP`, поэтому активное состояние — `LOW`.
+
+### Input Registers
+
+Чтение: `FC04`
+
+| Address | Назначение | Формат |
+| --- | --- | --- |
+| `0` | Температура DS18B20 | `°C * 10` |
+
+Пример: значение `253` означает `25.3 °C`.
+
+## Настройка Modbus Poll
+
+Для проверки реле:
+
+| Параметр | Значение |
+| --- | --- |
+| Function | `01 Read Coils` |
+| Address | `0` |
+| Quantity | `2` |
+
+Для записи реле:
+
+| Параметр | Relay 1 | Relay 2 |
+| --- | --- | --- |
+| Function | `05 Write Single Coil` | `05 Write Single Coil` |
+| Address | `0` | `1` |
+| Value | `ON/OFF` | `ON/OFF` |
+
+Для входов:
+
+| Параметр | Значение |
+| --- | --- |
+| Function | `02 Read Discrete Inputs` |
+| Address | `0` |
+| Quantity | `4` |
+
+Для температуры:
+
+| Параметр | Значение |
+| --- | --- |
+| Function | `04 Read Input Registers` |
+| Address | `0` |
+| Quantity | `1` |
+
+![Modbus Poll](https://github.com/UterGrooll/PLC_PRS10/blob/main/screenshot/Modbus%20Poll.png)
+
+![Rapid SCADA](https://github.com/UterGrooll/PLC_PRS10/blob/main/screenshot/Rapid%20Scada.png)
+
+## Ethernet Watchdog
+
+В скетч добавлен watchdog Ethernet-соединения.
+
+Если патч-корд вытащили и затем подключили обратно, W5100/W5500 иногда отвечает на ping, но TCP-сервер Modbus не принимает соединение до перезагрузки Arduino. Watchdog отслеживает возврат `LinkON` и выполняет:
+
+```cpp
+Ethernet.begin(mac, ip, gateway, subnet);
+MbServer.begin();
+```
+
+Это восстанавливает Modbus TCP Server без ручной перезагрузки платы.
+
+## Основной скетч
+
+Актуальный скетч находится здесь:
+
+[`src/17_11_25_relay_d6_relay_d7_ds18b20_d9_DI_d2_d3_d4_d5/17_11_25_relay_d6_relay_d7_ds18b20_d9_DI_d2_d3_d4_d5.ino`](src/17_11_25_relay_d6_relay_d7_ds18b20_d9_DI_d2_d3_d4_d5/17_11_25_relay_d6_relay_d7_ds18b20_d9_DI_d2_d3_d4_d5.ino)
+
+## Зависимости
+
+- `SPI`
+- `Ethernet`
+- [`ModbusTCP_RU`](https://github.com/UterGrooll/ModbusTCP_RU)
+- `GyverDS18`
+
+## Лицензия
+
+Проект свободен для использования, модификации и интеграции в SCADA-системы.
+
 ---
 
-# ⚙ Настройки в SCADA / Modbus Poll
-| Параметр            | Значение          |
-| ------------------- | ----------------- |
-| Mode                | Modbus TCP/IP     |
-| Server IP           | **192.168.1.179** |
-| Port                | **502**           |
-| Response Timeout    | 1000 ms           |
-| Delay Between Polls | 20–50 ms          |
-| Connect Timeout     | 8000 ms           |
-
-![Снимок](https://github.com/UterGrooll/PLC_PRS10/blob/main/screenshot/Modbus%20Poll.png)
-
-![Снимок](https://github.com/UterGrooll/PLC_PRS10/blob/main/screenshot/Rapid%20Scada.png)
-
-# 📝 Лицензия
-Проект свободен к использованию, модификации и интеграции в любые SCADA-системы.
-
----
-by UterGrooll 
-2025
+by UterGrooll
+2026

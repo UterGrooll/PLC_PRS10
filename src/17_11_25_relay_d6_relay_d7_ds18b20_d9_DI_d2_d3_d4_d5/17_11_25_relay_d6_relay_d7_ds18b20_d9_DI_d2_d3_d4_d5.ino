@@ -1,125 +1,217 @@
 #include <SPI.h>
 #include <Ethernet.h>
-#include <ModbusEthernet.h>
+#include "ModbusTCP_RU.h"
 #include <GyverDS18.h>
+
+extern EthernetServer MbServer;
 
 /* ---------- Network & Modbus ---------- */
 byte mac[] = { 0xDE, 0xDD, 0xBE, 0xEF, 0xFE, 0x01 };
-IPAddress ip(192, 168, 0, 179);
-ModbusEthernet mb;
+IPAddress ip(192, 168, 1, 179);
+IPAddress gateway(192, 168, 1, 1);
+IPAddress subnet(255, 255, 255, 0);
 
-/* ---------- Relays ---------- */
+ModbusTCP_RU mb;
+
+/* ---------- Relays: Coils, FC01/FC05/FC15 ---------- */
 const uint8_t RELAY1_PIN = 7;
 const uint8_t RELAY2_PIN = 6;
-const uint16_t REG_RELAY1 = 110;
-const uint16_t REG_RELAY2 = 111;
-const uint32_t RELAY1_TIMEOUT = 60000UL;  // 1 min
+
+const word COIL_RELAY1 = 0;
+const word COIL_RELAY2 = 1;
+
+const uint32_t RELAY1_TIMEOUT = 60000UL;
 uint32_t relay1OnTime = 0;
 
-/* ---------- Temperature ---------- */
+/* ---------- Temperature: Input Register, FC04 ---------- */
 const uint8_t DS_PIN = 9;
 GyverDS18Single ds(DS_PIN);
-const uint16_t REG_TEMP = 120;
 
-/* ---------- Inputs ---------- */
+const word IREG_TEMP_X10 = 0;
+
+/* ---------- Inputs: Discrete Inputs, FC02 ---------- */
 const uint8_t IN_PINS[] = { 2, 3, 4, 5 };
-const uint16_t REG_IN_BASE = 130;
+const uint8_t INPUT_COUNT = sizeof(IN_PINS) / sizeof(IN_PINS[0]);
+
+const word DISC_INPUT_BASE = 0;
+
 const uint32_t DEBOUNCE_MS = 50;
-uint8_t inputState = 0xFF;  // 1=closed (LOW), 0=open (HIGH)
-uint8_t inputLast  = 0xFF;
+uint8_t inputState = 0;
+uint8_t inputLast = 0;
 uint32_t debounceTimer = 0;
 
-/* ---------- Serial debug ---------- */
-uint32_t serialTimer = 0;
-const uint32_t SERIAL_PERIOD = 500;
+/* ---------- Ethernet watchdog ---------- */
+const uint32_t LINK_CHECK_PERIOD_MS = 1000UL;
+const uint32_t LINK_RECOVER_DELAY_MS = 1500UL;
+const uint32_t FORCE_REINIT_PERIOD_MS = 30000UL;
 
-/* ---------- Setup ---------- */
-void setup() {
-  Serial.begin(115200);
+uint32_t linkCheckTimer = 0;
+uint32_t linkDownTime = 0;
+uint32_t lastEthernetRestart = 0;
+bool linkWasDown = false;
+
+void restartEthernet()
+{
+  Ethernet.begin(mac, ip, gateway, subnet);
+  delay(500);
+  MbServer.begin();
+  lastEthernetRestart = millis();
+}
+
+void updateEthernetWatchdog()
+{
+  uint32_t now = millis();
+
+  if (now - linkCheckTimer < LINK_CHECK_PERIOD_MS) {
+    return;
+  }
+  linkCheckTimer = now;
+
+  EthernetLinkStatus link = Ethernet.linkStatus();
+
+  if (link == LinkOFF) {
+    if (!linkWasDown) {
+      linkWasDown = true;
+      linkDownTime = now;
+    }
+    return;
+  }
+
+  if (link == LinkON && linkWasDown) {
+    if (now - linkDownTime >= LINK_RECOVER_DELAY_MS) {
+      linkWasDown = false;
+      restartEthernet();
+    }
+    return;
+  }
+
+  if (link == Unknown && (now - lastEthernetRestart >= FORCE_REINIT_PERIOD_MS)) {
+    restartEthernet();
+  }
+}
+
+void applyRelay(word address, bool value)
+{
+  switch (address) {
+    case COIL_RELAY1:
+      digitalWrite(RELAY1_PIN, value ? HIGH : LOW);
+
+      if (value) {
+        relay1OnTime = millis();
+      } else {
+        relay1OnTime = 0;
+      }
+      break;
+
+    case COIL_RELAY2:
+      digitalWrite(RELAY2_PIN, value ? HIGH : LOW);
+      break;
+  }
+}
+
+uint8_t readInputsRaw()
+{
+  uint8_t value = 0;
+
+  for (uint8_t i = 0; i < INPUT_COUNT; i++) {
+    if (digitalRead(IN_PINS[i]) == LOW) {
+      value |= (1 << i);
+    }
+  }
+
+  return value;
+}
+
+void publishInputs()
+{
+  for (uint8_t i = 0; i < INPUT_COUNT; i++) {
+    mb.Discrete(DISC_INPUT_BASE + i, (inputState >> i) & 1);
+  }
+}
+
+void updateInputs(uint32_t now)
+{
+  uint8_t nowInputs = readInputsRaw();
+
+  if (nowInputs != inputLast) {
+    inputLast = nowInputs;
+    debounceTimer = now;
+    return;
+  }
+
+  if ((now - debounceTimer) >= DEBOUNCE_MS && nowInputs != inputState) {
+    inputState = nowInputs;
+    publishInputs();
+  }
+}
+
+void updateRelayTimer(uint32_t now)
+{
+  if (!mb.Coil(COIL_RELAY1)) {
+    relay1OnTime = 0;
+    return;
+  }
+
+  if (relay1OnTime == 0) {
+    relay1OnTime = now;
+  }
+
+  if ((now - relay1OnTime) >= RELAY1_TIMEOUT) {
+    mb.Coil(COIL_RELAY1, false);
+  }
+}
+
+void updateTemperature()
+{
+  if (!ds.ready()) {
+    return;
+  }
+
+  if (ds.readTemp()) {
+    int16_t tempX10 = (int16_t)(ds.getTemp() * 10.0f);
+    mb.Ireg(IREG_TEMP_X10, (word)tempX10);
+  }
+
+  ds.requestTemp();
+}
+
+void setup()
+{
   pinMode(RELAY1_PIN, OUTPUT);
   pinMode(RELAY2_PIN, OUTPUT);
+
   digitalWrite(RELAY1_PIN, LOW);
   digitalWrite(RELAY2_PIN, LOW);
 
-  for (uint8_t i = 0; i < 4; ++i) {
+  mb.Coil(COIL_RELAY1, false);
+  mb.Coil(COIL_RELAY2, false);
+  mb.Ireg(IREG_TEMP_X10, 0);
+
+  for (uint8_t i = 0; i < INPUT_COUNT; i++) {
     pinMode(IN_PINS[i], INPUT_PULLUP);
-    mb.addReg(HREG(REG_IN_BASE + i));
-    mb.Hreg(REG_IN_BASE + i, 0);
+    mb.Discrete(DISC_INPUT_BASE + i, false);
   }
+
+  inputState = readInputsRaw();
+  inputLast = inputState;
+  publishInputs();
+
+  mb.onCoilWrite(applyRelay);
 
   Ethernet.init(10);
-  Ethernet.begin(mac, ip);
-  mb.server();
-
-  mb.addReg(HREG(REG_RELAY1));
-  mb.Hreg(REG_RELAY1, 0);
-  mb.addReg(HREG(REG_RELAY2));
-  mb.Hreg(REG_RELAY2, 0);
-  mb.addReg(HREG(REG_TEMP));
-  mb.Hreg(REG_TEMP, 0);
+  restartEthernet();
 
   ds.requestTemp();
-
-  Serial.println(F("System Ready!"));
 }
 
-/* ---------- Main loop ---------- */
-void loop() {
-  mb.task();  // handle Modbus requests
+void loop()
+{
+  mb.MbsRun();
+
   uint32_t now = millis();
 
-  /* ===== Relay 1 with timer ===== */
-  if (mb.Hreg(REG_RELAY1)) {
-    digitalWrite(RELAY1_PIN, HIGH);
-    if (!relay1OnTime) relay1OnTime = now;
-    if ((now - relay1OnTime) >= RELAY1_TIMEOUT) {
-      mb.Hreg(REG_RELAY1, 0);
-      relay1OnTime = 0;
-      digitalWrite(RELAY1_PIN, LOW);
-    }
-  } else {
-    relay1OnTime = 0;
-    digitalWrite(RELAY1_PIN, LOW);
-  }
-
-  /* ===== Relay 2 ===== */
-  digitalWrite(RELAY2_PIN, mb.Hreg(REG_RELAY2) ? HIGH : LOW);
-
-  /* ===== Temperature ===== */
-  if (ds.ready()) {
-    if (ds.readTemp()) {
-      float t = ds.getTemp();
-      mb.Hreg(REG_TEMP, (int)(t * 10));  // 1/10 °C precision
-    }
-    ds.requestTemp();  // schedule next reading
-  }
-
-  /* ===== Dry contacts with debounce ===== */
-  uint8_t nowInputs = 0;
-  for (uint8_t i = 0; i < 4; ++i) {
-    if (digitalRead(IN_PINS[i]) == LOW) nowInputs |= (1 << i);
-  }
-
-  if (nowInputs != inputLast) {
-    debounceTimer = now;
-    inputLast = nowInputs;
-  } else if ((now - debounceTimer) >= DEBOUNCE_MS && nowInputs != inputState) {
-    inputState = nowInputs;
-    for (uint8_t i = 0; i < 4; ++i) {
-      mb.Hreg(REG_IN_BASE + i, (inputState >> i) & 1);
-    }
-  }
-
-  /* ===== Serial debug (non‑blocking) ===== */
-  if ((now - serialTimer) >= SERIAL_PERIOD) {
-    serialTimer = now;
-    Serial.print(F("Temp="));
-    Serial.print(mb.Hreg(REG_TEMP) / 10.0);
-    Serial.print(F("C R1="));
-    Serial.print(mb.Hreg(REG_RELAY1));
-    Serial.print(F(" R2="));
-    Serial.print(mb.Hreg(REG_RELAY2));
-    Serial.print(F(" IN="));
-    Serial.println(inputState, BIN);
-  }
+  updateEthernetWatchdog();
+  updateRelayTimer(now);
+  updateTemperature();
+  updateInputs(now);
 }
