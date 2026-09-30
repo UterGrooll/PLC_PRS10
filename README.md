@@ -1,28 +1,25 @@
 # PLC_PRS10
 
-`PLC_PRS10` — Arduino Modbus TCP Slave контроллер для SCADA.
+ПЛК ПРС-10 на Arduino + Ethernet. Использую для своих задач в Rapid SCADA: два реле, местный датчик DS18B20 и четыре дискретных входа.
 
-Проект построен на Arduino + Ethernet W5100/W5500 и библиотеке [`ModbusTCP_RU`](https://github.com/UterGrooll/ModbusTCP_RU). Устройство предоставляет SCADA две релейные команды, температуру DS18B20 и четыре дискретных входа.
+Обмен — `Modbus TCP Slave`, библиотека [ModbusTCP_RU](https://github.com/UterGrooll/ModbusTCP_RU) `0.3.0`, Ethernet `W5100/W5500`.
 
-![Фото устройства](https://github.com/UterGrooll/PLC_PRS10/blob/main/screenshot/20251112_151544.jpg)
+![Фото устройства](screenshot/20251112_151544.jpg)
 
-## Назначение
+## Возможности
 
-Контроллер предназначен для небольших задач автоматизации:
-
-- управление двумя реле из SCADA;
-- автоматическое отключение первого реле через 60 секунд;
-- чтение температуры с датчика DS18B20;
-- чтение четырёх дискретных входов;
-- работа по Modbus TCP через порт `502`;
-- восстановление Ethernet-сервера после выдёргивания и возврата патч-корда.
+- Управление двумя реле из SCADA.
+- Автоматическое отключение первого реле через 60 секунд.
+- Чтение температуры DS18B20 с точностью передачи 0,1 °C.
+- Четыре дискретных входа с антидребезгом 50 мс.
+- Восстановление Modbus-сервера после возврата Ethernet-линка W5500.
 
 ## Аппаратная часть
 
 | Узел | Пин Arduino |
 | --- | --- |
-| Relay 1 | D7 |
-| Relay 2 | D6 |
+| Реле 1 | D7 |
+| Реле 2 | D6 |
 | DI1 | D2 |
 | DI2 | D3 |
 | DI3 | D4 |
@@ -30,140 +27,107 @@
 | DS18B20 | D9 |
 | W5100/W5500 CS | D10 |
 
-Остальные пины SPI используются стандартно для Ethernet-модуля.
+Реле включаются уровнем `HIGH`, при запуске оба выключены (`LOW`). Входы работают через `INPUT_PULLUP`: замкнутый на GND контакт — активный вход.
 
-Схема:
+Ethernet использует стандартные пины SPI платы.
 
-![Схема](https://github.com/UterGrooll/PLC_PRS10/blob/main/screenshot/shematic.png)
+![Схема](screenshot/shematic.png)
 
 ## Сеть
 
-По умолчанию в скетче задано:
-
-```cpp
-byte mac[] = { 0xDE, 0xDD, 0xBE, 0xEF, 0xFE, 0x01 };
-IPAddress ip(192, 168, 1, 179);
-IPAddress gateway(192, 168, 1, 1);
-IPAddress subnet(255, 255, 255, 0);
-```
-
-SCADA подключается к:
-
 | Параметр | Значение |
 | --- | --- |
-| Mode | Modbus TCP/IP |
-| Server IP | `192.168.1.179` |
-| Port | `502` |
-| Slave ID | `1` |
-| Timeout | `1000 ms` |
-| Scan Rate | `1000 ms` |
+| IP | `192.168.1.179` |
+| MAC | `02:47:A1:10:00:02` |
+| Шлюз / DNS | `192.168.1.1` |
+| Маска | `255.255.255.0` |
+| Порт Modbus TCP | `502` |
+
+Для проверки нужен доступ к сети `192.168.1.0/24`. При необходимости сетевые параметры меняются в начале скетча. MAC и IP не должны совпадать с другим устройством в сети.
 
 ## Карта Modbus
 
-В проекте используется раздельная Modbus-модель из `ModbusTCP_RU`.
+Адреса в таблице начинаются с нуля. Coils, Discrete Inputs и Input Registers — отдельные области памяти.
 
-### Coils
+| Область | FC | Address | Назначение |
+| --- | --- | --- | --- |
+| Coil | 01 / 05 / 15 | 0 | Реле 1, D7; авто-отключение через 60 с |
+| Coil | 01 / 05 / 15 | 1 | Реле 2, D6 |
+| Discrete Input | 02 | 0 | DI1, D2 |
+| Discrete Input | 02 | 1 | DI2, D3 |
+| Discrete Input | 02 | 2 | DI3, D4 |
+| Discrete Input | 02 | 3 | DI4, D5 |
+| Input Register | 04 | 0 | Местная температура DS18B20, °C × 10 |
 
-Чтение: `FC01`
-Запись: `FC05` или `FC15`
+Для реле: `0 = OFF`, `1 = ON`. Повторная команда ON не продлевает таймер реле 1; для нового цикла нужны OFF → ON. Время задаётся константой `RELAY1_TIMEOUT` в скетче. Настройки времени через Holding Registers здесь нет.
 
-| Address | Назначение | Формат |
-| --- | --- | --- |
-| `0` | Relay 1 | `0 = OFF`, `1 = ON` |
-| `1` | Relay 2 | `0 = OFF`, `1 = ON` |
+Для входов: `1 = замкнут / LOW`, `0 = разомкнут / HIGH`.
 
-Relay 1 автоматически отключается через `60` секунд после включения.
-
-### Discrete Inputs
-
-Чтение: `FC02`
-
-| Address | Назначение | Формат |
-| --- | --- | --- |
-| `0` | DI1, пин D2 | `1 = замкнут`, `0 = разомкнут` |
-| `1` | DI2, пин D3 | `1 = замкнут`, `0 = разомкнут` |
-| `2` | DI3, пин D4 | `1 = замкнут`, `0 = разомкнут` |
-| `3` | DI4, пин D5 | `1 = замкнут`, `0 = разомкнут` |
-
-Входы работают через `INPUT_PULLUP`, поэтому активное состояние — `LOW`.
-
-### Input Registers
-
-Чтение: `FC04`
-
-| Address | Назначение | Формат |
-| --- | --- | --- |
-| `0` | Температура DS18B20 | `°C * 10` |
-
-Пример: значение `253` означает `25.3 °C`.
+Температура передаётся как **Signed 16-bit**: `253 = 25,3 °C`, `-55 = -5,5 °C`. Значение `32767` означает ошибку или отсутствие измерения; его нельзя пересчитывать в температуру.
 
 ## Настройка Modbus Poll
 
-Для проверки реле:
+Connection → Connect:
 
 | Параметр | Значение |
 | --- | --- |
-| Function | `01 Read Coils` |
-| Address | `0` |
-| Quantity | `2` |
+| Connection | Modbus TCP/IP |
+| IP | `192.168.1.179` |
+| Server Port | `502` |
+| Slave ID | `1` |
+| Response Timeout | `1000 ms` |
 
-Для записи реле:
+Read/Write Definition:
 
-| Параметр | Relay 1 | Relay 2 |
-| --- | --- | --- |
-| Function | `05 Write Single Coil` | `05 Write Single Coil` |
-| Address | `0` | `1` |
-| Value | `ON/OFF` | `ON/OFF` |
+| Что читать | Function | Address | Quantity |
+| --- | --- | --- | --- |
+| Реле | 01 Read Coils | 0 | 2 |
+| Входы | 02 Read Discrete Inputs | 0 | 4 |
+| Температура | 04 Read Input Registers | 0 | 1 |
 
-Для входов:
+Scan Rate для начала — `1000 ms`. При вводе этих адресов отключить `PLC Addresses (Base 1)`.
 
-| Параметр | Значение |
-| --- | --- |
-| Function | `02 Read Discrete Inputs` |
-| Address | `0` |
-| Quantity | `4` |
+Запись реле выполняется через `05 Write Single Coil`: Address `0` для первого реле или `1` для второго, Value `ON/OFF`. Команду записи отправлять однократно.
 
-Для температуры:
+Для температуры выбрать Signed 16-bit и делить значение на 10 в SCADA.
 
-| Параметр | Значение |
-| --- | --- |
-| Function | `04 Read Input Registers` |
-| Address | `0` |
-| Quantity | `1` |
+![Modbus Poll](screenshot/Modbus%20Poll.png)
 
-![Modbus Poll](https://github.com/UterGrooll/PLC_PRS10/blob/main/screenshot/Modbus%20Poll.png)
+![Rapid SCADA](screenshot/Rapid%20Scada.png)
 
-![Rapid SCADA](https://github.com/UterGrooll/PLC_PRS10/blob/main/screenshot/Rapid%20Scada.png)
+## Восстановление Ethernet
 
-## Ethernet Watchdog
+При старте вызываются `Ethernet.begin(mac, ip, dnsServer, gateway, subnet)` и `mb.begin()`.
 
-В скетч добавлен watchdog Ethernet-соединения.
+После пропадания и устойчивого возврата `LinkON` на W5500 выдерживается не менее 1,5 с, затем `mb.restart()` закрывает старые клиентские соединения. Повторного `Ethernet.begin()` и блокирующей паузы в этом обработчике нет. SCADA или Modbus Poll должны подключиться заново.
 
-Если патч-корд вытащили и затем подключили обратно, W5100/W5500 иногда отвечает на ping, но TCP-сервер Modbus не принимает соединение до перезагрузки Arduino. Watchdog отслеживает возврат `LinkON` и выполняет:
+W5100 может возвращать `Unknown` в `linkStatus()`. Это не вызывает периодического сброса Ethernet.
 
-```cpp
-Ethernet.begin(mac, ip, gateway, subnet);
-MbServer.begin();
-```
+Это контроль Ethernet-соединения, **не аппаратный watchdog AVR**. Аппаратный watchdog в этом скетче не включён.
 
-Это восстанавливает Modbus TCP Server без ручной перезагрузки платы.
+## Прошивка
 
-## Основной скетч
+Актуальный скетч: [firmware/plc_prs10/plc_prs10.ino](firmware/plc_prs10/plc_prs10.ino).
 
-Актуальный скетч находится здесь:
+Зависимости:
 
-[`src/17_11_25_relay_d6_relay_d7_ds18b20_d9_DI_d2_d3_d4_d5/17_11_25_relay_d6_relay_d7_ds18b20_d9_DI_d2_d3_d4_d5.ino`](src/17_11_25_relay_d6_relay_d7_ds18b20_d9_DI_d2_d3_d4_d5/17_11_25_relay_d6_relay_d7_ds18b20_d9_DI_d2_d3_d4_d5.ino)
+- `SPI` — входит в Arduino core.
+- `Ethernet 2.0.2`.
+- [ModbusTCP_RU 0.3.0](https://github.com/UterGrooll/ModbusTCP_RU).
+- `GyverDS18`.
 
-## Зависимости
+Размеры памяти Modbus задаются в общем файле библиотеки `src/ModbusTCP_RU_config.h`, а не через локальные `#define` в скетче.
 
-- `SPI`
-- `Ethernet`
-- [`ModbusTCP_RU`](https://github.com/UterGrooll/ModbusTCP_RU)
-- `GyverDS18`
+Скетч собран для Arduino UNO и Nano ATmega328P Old Bootloader: `16820` байт Flash, `771` байт SRAM. Проверка сборки не заменяет испытания этой версии на плате.
 
-## Лицензия
+После заливки проверить реле, четыре входа, температуру, авто-отключение реле 1 и переподключение после возврата кабеля. Реле проверять на безопасной нагрузке.
 
-Проект свободен для использования, модификации и интеграции в SCADA-системы.
+## Материалы
+
+- [schematic/](schematic/) — исходники схемы.
+- [case/](case/) — модель корпуса.
+- [screenshot/](screenshot/) — фотографии и изображения.
+- [src/](src/) — предыдущие скетчи; для текущей заливки используется только `firmware/plc_prs10/`.
 
 ---
 
